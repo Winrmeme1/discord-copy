@@ -1,0 +1,920 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat App</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel">
+        import React, { useState, useEffect, useRef } from 'react';
+import { Send, Phone, Video, UserPlus, Users, Settings, Mic, MicOff, PhoneOff, Hash, Plus, Search, LogOut, X } from 'lucide-react';
+
+export default function DiscordClone() {
+  const [currentUser, setCurrentUser] = useState(null);
+  const [loginMode, setLoginMode] = useState('login');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  
+  const [friends, setFriends] = useState([]);
+  const [friendRequests, setFriendRequests] = useState([]);
+  const [sentRequests, setSentRequests] = useState([]);
+  const [activeView, setActiveView] = useState('friends');
+  const [activeChat, setActiveChat] = useState(null);
+  const [activeChatType, setActiveChatType] = useState(null);
+  const [messages, setMessages] = useState({});
+  const [inputMessage, setInputMessage] = useState('');
+  const [inCall, setInCall] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [showAddFriend, setShowAddFriend] = useState(false);
+  const [friendUsername, setFriendUsername] = useState('');
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
+  const [groupName, setGroupName] = useState('');
+  const [selectedFriendsForGroup, setSelectedFriendsForGroup] = useState([]);
+  const [groupChats, setGroupChats] = useState([]);
+  
+  const messagesEndRef = useRef(null);
+  const messagePollingRef = useRef(null);
+
+  useEffect(() => {
+    checkAuth();
+  }, []);
+
+  useEffect(() => {
+    if (currentUser) {
+      loadUserData();
+      startMessagePolling();
+    }
+    return () => {
+      if (messagePollingRef.current) {
+        clearInterval(messagePollingRef.current);
+      }
+    };
+  }, [currentUser]);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, activeChat]);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const checkAuth = async () => {
+    try {
+      const result = await window.storage.get('current_user', false);
+      if (result) {
+        setCurrentUser(JSON.parse(result.value));
+      }
+    } catch (error) {
+      console.log('No active session');
+    }
+    setLoading(false);
+  };
+
+  const loadUserData = async () => {
+    if (!currentUser) return;
+    
+    try {
+      const friendsData = await window.storage.get(`friends:${currentUser.id}`, false);
+      if (friendsData) {
+        const friendIds = JSON.parse(friendsData.value);
+        const friendsList = [];
+        for (const friendId of friendIds) {
+          try {
+            const friendData = await window.storage.get(`user:${friendId}`, true);
+            if (friendData) {
+              const friend = JSON.parse(friendData.value);
+              friendsList.push(friend);
+            }
+          } catch (e) {
+            console.log('Friend not found');
+          }
+        }
+        setFriends(friendsList);
+      }
+      
+      const requestsData = await window.storage.get(`friend_requests:${currentUser.id}`, false);
+      if (requestsData) {
+        setFriendRequests(JSON.parse(requestsData.value));
+      }
+      
+      const sentData = await window.storage.get(`sent_requests:${currentUser.id}`, false);
+      if (sentData) {
+        setSentRequests(JSON.parse(sentData.value));
+      }
+
+      const groupsData = await window.storage.get(`groups:${currentUser.id}`, false);
+      if (groupsData) {
+        setGroupChats(JSON.parse(groupsData.value));
+      }
+      
+    } catch (error) {
+      console.error('Error loading user data:', error);
+    }
+  };
+
+  const startMessagePolling = () => {
+    if (messagePollingRef.current) {
+      clearInterval(messagePollingRef.current);
+    }
+    
+    messagePollingRef.current = setInterval(async () => {
+      if (currentUser && activeChat) {
+        await loadMessages();
+      }
+      await loadUserData();
+    }, 2000);
+  };
+
+  const loadMessages = async () => {
+    if (!activeChat) return;
+    
+    const chatKey = activeChatType === 'group' 
+      ? `group_messages:${activeChat.id}`
+      : `dm_messages:${[currentUser.id, activeChat.id].sort().join('_')}`;
+    
+    try {
+      const result = await window.storage.get(chatKey, true);
+      if (result) {
+        const allMessages = JSON.parse(result.value);
+        setMessages(prev => ({
+          ...prev,
+          [chatKey]: allMessages
+        }));
+      }
+    } catch (error) {
+      console.log('No messages yet');
+    }
+  };
+
+  const signup = async () => {
+    if (!username.trim() || !password.trim()) {
+      setError('Username and password are required');
+      return;
+    }
+    
+    if (username.length < 3) {
+      setError('Username must be at least 3 characters');
+      return;
+    }
+    
+    try {
+      let existingUser = null;
+      try {
+        existingUser = await window.storage.get(`username:${username.toLowerCase()}`, true);
+      } catch (e) {
+        // Username doesn't exist, which is what we want
+      }
+      
+      if (existingUser) {
+        setError('Username already taken');
+        return;
+      }
+      
+      const userId = Date.now().toString();
+      const user = {
+        id: userId,
+        username: username,
+        status: 'online',
+        avatar: username[0].toUpperCase(),
+        createdAt: new Date().toISOString()
+      };
+      
+      const userSet = await window.storage.set(`user:${userId}`, JSON.stringify(user), true);
+      const usernameSet = await window.storage.set(`username:${username.toLowerCase()}`, userId, true);
+      const passwordSet = await window.storage.set(`password:${userId}`, password, true);
+      const currentSet = await window.storage.set('current_user', JSON.stringify(user), false);
+      
+      if (!userSet || !usernameSet || !passwordSet || !currentSet) {
+        setError('Error creating account. Storage failed.');
+        return;
+      }
+      
+      setCurrentUser(user);
+      setError('');
+      setUsername('');
+      setPassword('');
+    } catch (error) {
+      setError(`Error: ${error.message || 'Please try again'}`);
+      console.error('Signup error:', error);
+    }
+  };
+
+  const login = async () => {
+    if (!username.trim() || !password.trim()) {
+      setError('Username and password are required');
+      return;
+    }
+    
+    try {
+      const userIdResult = await window.storage.get(`username:${username.toLowerCase()}`, true);
+      if (!userIdResult) {
+        setError('Invalid username or password');
+        return;
+      }
+      
+      const userId = userIdResult.value;
+      const passwordResult = await window.storage.get(`password:${userId}`, true);
+      
+      if (!passwordResult || passwordResult.value !== password) {
+        setError('Invalid username or password');
+        return;
+      }
+      
+      const userResult = await window.storage.get(`user:${userId}`, true);
+      if (!userResult) {
+        setError('User not found');
+        return;
+      }
+      
+      const user = JSON.parse(userResult.value);
+      await window.storage.set('current_user', JSON.stringify(user), false);
+      
+      setCurrentUser(user);
+      setError('');
+      setUsername('');
+      setPassword('');
+    } catch (error) {
+      setError('Error logging in. Please try again.');
+      console.error(error);
+    }
+  };
+
+  const logout = async () => {
+    try {
+      await window.storage.delete('current_user', false);
+      setCurrentUser(null);
+      setFriends([]);
+      setFriendRequests([]);
+      setSentRequests([]);
+      setGroupChats([]);
+      setActiveChat(null);
+      setMessages({});
+    } catch (error) {
+      console.error('Error logging out:', error);
+    }
+  };
+
+  const sendFriendRequest = async () => {
+    if (!friendUsername.trim()) return;
+    
+    try {
+      const targetUserIdResult = await window.storage.get(`username:${friendUsername.toLowerCase()}`, true);
+      if (!targetUserIdResult) {
+        setError('User not found');
+        return;
+      }
+      
+      const targetUserId = targetUserIdResult.value;
+      
+      if (targetUserId === currentUser.id) {
+        setError('You cannot add yourself as a friend');
+        return;
+      }
+      
+      if (friends.some(f => f.id === targetUserId)) {
+        setError('Already friends with this user');
+        return;
+      }
+      
+      if (sentRequests.some(r => r.id === targetUserId)) {
+        setError('Friend request already sent');
+        return;
+      }
+      
+      const targetUserResult = await window.storage.get(`user:${targetUserId}`, true);
+      const targetUser = JSON.parse(targetUserResult.value);
+      
+      const theirRequestsResult = await window.storage.get(`friend_requests:${targetUserId}`, false);
+      const theirRequests = theirRequestsResult ? JSON.parse(theirRequestsResult.value) : [];
+      theirRequests.push({
+        id: currentUser.id,
+        username: currentUser.username,
+        avatar: currentUser.avatar
+      });
+      await window.storage.set(`friend_requests:${targetUserId}`, JSON.stringify(theirRequests), false);
+      
+      const newSentRequests = [...sentRequests, { id: targetUserId, username: targetUser.username }];
+      setSentRequests(newSentRequests);
+      await window.storage.set(`sent_requests:${currentUser.id}`, JSON.stringify(newSentRequests), false);
+      
+      setFriendUsername('');
+      setShowAddFriend(false);
+      setError('');
+    } catch (error) {
+      setError('Error sending friend request');
+      console.error(error);
+    }
+  };
+
+  const acceptFriendRequest = async (request) => {
+    try {
+      const newFriends = [...friends, request];
+      setFriends(newFriends);
+      
+      const myFriendIds = newFriends.map(f => f.id);
+      await window.storage.set(`friends:${currentUser.id}`, JSON.stringify(myFriendIds), false);
+      
+      const theirFriendsResult = await window.storage.get(`friends:${request.id}`, false);
+      const theirFriends = theirFriendsResult ? JSON.parse(theirFriendsResult.value) : [];
+      theirFriends.push(currentUser.id);
+      await window.storage.set(`friends:${request.id}`, JSON.stringify(theirFriends), false);
+      
+      const newRequests = friendRequests.filter(r => r.id !== request.id);
+      setFriendRequests(newRequests);
+      await window.storage.set(`friend_requests:${currentUser.id}`, JSON.stringify(newRequests), false);
+      
+      const theirSentResult = await window.storage.get(`sent_requests:${request.id}`, false);
+      if (theirSentResult) {
+        const theirSent = JSON.parse(theirSentResult.value).filter(r => r.id !== currentUser.id);
+        await window.storage.set(`sent_requests:${request.id}`, JSON.stringify(theirSent), false);
+      }
+    } catch (error) {
+      console.error('Error accepting friend request:', error);
+    }
+  };
+
+  const declineFriendRequest = async (request) => {
+    try {
+      const newRequests = friendRequests.filter(r => r.id !== request.id);
+      setFriendRequests(newRequests);
+      await window.storage.set(`friend_requests:${currentUser.id}`, JSON.stringify(newRequests), false);
+      
+      const theirSentResult = await window.storage.get(`sent_requests:${request.id}`, false);
+      if (theirSentResult) {
+        const theirSent = JSON.parse(theirSentResult.value).filter(r => r.id !== currentUser.id);
+        await window.storage.set(`sent_requests:${request.id}`, JSON.stringify(theirSent), false);
+      }
+    } catch (error) {
+      console.error('Error declining friend request:', error);
+    }
+  };
+
+  const createGroupChat = async () => {
+    if (!groupName.trim() || selectedFriendsForGroup.length === 0) {
+      setError('Please enter a group name and select at least one friend');
+      return;
+    }
+
+    try {
+      const groupId = Date.now().toString();
+      const group = {
+        id: groupId,
+        name: groupName,
+        members: [currentUser.id, ...selectedFriendsForGroup],
+        createdBy: currentUser.id,
+        createdAt: new Date().toISOString()
+      };
+
+      for (const memberId of group.members) {
+        const memberGroupsResult = await window.storage.get(`groups:${memberId}`, false);
+        const memberGroups = memberGroupsResult ? JSON.parse(memberGroupsResult.value) : [];
+        memberGroups.push(group);
+        await window.storage.set(`groups:${memberId}`, JSON.stringify(memberGroups), false);
+      }
+
+      setGroupChats([...groupChats, group]);
+      setGroupName('');
+      setSelectedFriendsForGroup([]);
+      setShowCreateGroup(false);
+      setError('');
+    } catch (error) {
+      setError('Error creating group chat');
+      console.error(error);
+    }
+  };
+
+  const sendMessage = async () => {
+    if (!inputMessage.trim() || !activeChat) return;
+    
+    const chatKey = activeChatType === 'group'
+      ? `group_messages:${activeChat.id}`
+      : `dm_messages:${[currentUser.id, activeChat.id].sort().join('_')}`;
+    
+    const newMessage = {
+      id: Date.now(),
+      senderId: currentUser.id,
+      senderName: currentUser.username,
+      senderAvatar: currentUser.avatar,
+      content: inputMessage,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+    
+    try {
+      const result = await window.storage.get(chatKey, true);
+      const existingMessages = result ? JSON.parse(result.value) : [];
+      const updatedMessages = [...existingMessages, newMessage];
+      
+      await window.storage.set(chatKey, JSON.stringify(updatedMessages), true);
+      
+      setMessages(prev => ({
+        ...prev,
+        [chatKey]: updatedMessages
+      }));
+      
+      setInputMessage('');
+    } catch (error) {
+      console.error('Error sending message:', error);
+    }
+  };
+
+  const openDM = async (friend) => {
+    setActiveChat(friend);
+    setActiveChatType('dm');
+    setActiveView('chat');
+    await loadMessages();
+  };
+
+  const openGroup = async (group) => {
+    setActiveChat(group);
+    setActiveChatType('group');
+    setActiveView('chat');
+    await loadMessages();
+  };
+
+  const getStatusColor = (status) => {
+    switch(status) {
+      case 'online': return 'bg-green-500';
+      case 'idle': return 'bg-yellow-500';
+      case 'offline': return 'bg-gray-500';
+      default: return 'bg-gray-500';
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-gray-900 text-white">
+        <div className="text-xl">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-gray-900">
+        <div className="bg-gray-800 p-8 rounded-lg shadow-xl w-96">
+          <h1 className="text-3xl font-bold text-white mb-6 text-center">Chat App</h1>
+          
+          <div className="flex mb-6 bg-gray-700 rounded-lg p-1">
+            <button
+              onClick={() => { setLoginMode('login'); setError(''); }}
+              className={`flex-1 py-2 rounded ${loginMode === 'login' ? 'bg-indigo-600 text-white' : 'text-gray-400'}`}
+            >
+              Login
+            </button>
+            <button
+              onClick={() => { setLoginMode('signup'); setError(''); }}
+              className={`flex-1 py-2 rounded ${loginMode === 'signup' ? 'bg-indigo-600 text-white' : 'text-gray-400'}`}
+            >
+              Sign Up
+            </button>
+          </div>
+          
+          {error && (
+            <div className="bg-red-500 text-white p-3 rounded mb-4 text-sm">
+              {error}
+            </div>
+          )}
+          
+          <input
+            type="text"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            onKeyPress={(e) => e.key === 'Enter' && (loginMode === 'login' ? login() : signup())}
+            placeholder="Username"
+            className="w-full bg-gray-700 text-white p-3 rounded mb-3 outline-none focus:ring-2 focus:ring-indigo-500"
+          />
+          
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            onKeyPress={(e) => e.key === 'Enter' && (loginMode === 'login' ? login() : signup())}
+            placeholder="Password"
+            className="w-full bg-gray-700 text-white p-3 rounded mb-4 outline-none focus:ring-2 focus:ring-indigo-500"
+          />
+          
+          <button
+            onClick={loginMode === 'login' ? login : signup}
+            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-3 rounded font-medium transition"
+          >
+            {loginMode === 'login' ? 'Login' : 'Sign Up'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const chatKey = activeChat 
+    ? (activeChatType === 'group' 
+        ? `group_messages:${activeChat.id}`
+        : `dm_messages:${[currentUser.id, activeChat.id].sort().join('_')}`)
+    : null;
+  const currentMessages = chatKey ? messages[chatKey] || [] : [];
+
+  return (
+    <div className="flex h-screen bg-gray-800 text-gray-100">
+      {showAddFriend && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-gray-800 p-6 rounded-lg w-96">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-xl font-bold">Add Friend</h3>
+              <button onClick={() => { setShowAddFriend(false); setError(''); }} className="text-gray-400 hover:text-white">
+                <X size={24} />
+              </button>
+            </div>
+            {error && <div className="bg-red-500 text-white p-2 rounded mb-3 text-sm">{error}</div>}
+            <input
+              type="text"
+              value={friendUsername}
+              onChange={(e) => setFriendUsername(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && sendFriendRequest()}
+              placeholder="Enter username"
+              className="w-full bg-gray-700 text-white p-3 rounded mb-4 outline-none"
+            />
+            <button
+              onClick={sendFriendRequest}
+              className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2 rounded"
+            >
+              Send Friend Request
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showCreateGroup && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-gray-800 p-6 rounded-lg w-96 max-h-96 overflow-y-auto">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-xl font-bold">Create Group Chat</h3>
+              <button onClick={() => { setShowCreateGroup(false); setError(''); }} className="text-gray-400 hover:text-white">
+                <X size={24} />
+              </button>
+            </div>
+            {error && <div className="bg-red-500 text-white p-2 rounded mb-3 text-sm">{error}</div>}
+            <input
+              type="text"
+              value={groupName}
+              onChange={(e) => setGroupName(e.target.value)}
+              placeholder="Group name"
+              className="w-full bg-gray-700 text-white p-3 rounded mb-4 outline-none"
+            />
+            <div className="mb-4">
+              <p className="text-sm text-gray-400 mb-2">Select friends:</p>
+              {friends.map(friend => (
+                <label key={friend.id} className="flex items-center space-x-2 p-2 hover:bg-gray-700 rounded cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedFriendsForGroup.includes(friend.id)}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedFriendsForGroup([...selectedFriendsForGroup, friend.id]);
+                      } else {
+                        setSelectedFriendsForGroup(selectedFriendsForGroup.filter(id => id !== friend.id));
+                      }
+                    }}
+                    className="form-checkbox"
+                  />
+                  <span>{friend.username}</span>
+                </label>
+              ))}
+            </div>
+            <button
+              onClick={createGroupChat}
+              className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2 rounded"
+            >
+              Create Group
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="w-16 bg-gray-900 flex flex-col items-center py-3 space-y-2">
+        <button 
+          onClick={() => { setActiveView('friends'); setActiveChat(null); }}
+          className="w-12 h-12 bg-indigo-600 hover:bg-indigo-500 rounded-full flex items-center justify-center transition-all hover:rounded-2xl"
+        >
+          <Users size={24} />
+        </button>
+      </div>
+
+      <div className="w-60 bg-gray-800 flex flex-col">
+        <div className="h-12 px-4 flex items-center justify-between shadow-md border-b border-gray-900">
+          <h2 className="font-semibold">Messages</h2>
+          <button
+            onClick={() => setShowAddFriend(true)}
+            className="text-gray-400 hover:text-white"
+          >
+            <UserPlus size={20} />
+          </button>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto">
+          <button
+            onClick={() => { setActiveView('friends'); setActiveChat(null); }}
+            className="w-full px-4 py-2 hover:bg-gray-700 text-left flex items-center space-x-3"
+          >
+            <Users size={20} className="text-gray-400" />
+            <span>Friends</span>
+            {friendRequests.length > 0 && (
+              <span className="ml-auto bg-red-500 text-xs rounded-full px-2 py-1">{friendRequests.length}</span>
+            )}
+          </button>
+
+          {groupChats.length > 0 && (
+            <div className="px-2 mt-4">
+              <div className="flex justify-between items-center px-2 mb-2">
+                <div className="text-xs font-semibold text-gray-400">GROUP CHATS</div>
+                <button
+                  onClick={() => setShowCreateGroup(true)}
+                  className="text-gray-400 hover:text-white"
+                >
+                  <Plus size={16} />
+                </button>
+              </div>
+              {groupChats.map(group => (
+                <button
+                  key={group.id}
+                  onClick={() => openGroup(group)}
+                  className={`w-full px-2 py-2 hover:bg-gray-700 rounded flex items-center space-x-3 ${activeChat?.id === group.id ? 'bg-gray-700' : ''}`}
+                >
+                  <div className="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center text-sm font-semibold">
+                    {group.name[0]}
+                  </div>
+                  <span className="text-sm truncate">{group.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          
+          <div className="px-2 mt-4">
+            <div className="flex justify-between items-center px-2 mb-2">
+              <div className="text-xs font-semibold text-gray-400">DIRECT MESSAGES</div>
+              {groupChats.length === 0 && (
+                <button
+                  onClick={() => setShowCreateGroup(true)}
+                  className="text-gray-400 hover:text-white"
+                  title="Create group chat"
+                >
+                  <Plus size={16} />
+                </button>
+              )}
+            </div>
+            {friends.map(friend => (
+              <button
+                key={friend.id}
+                onClick={() => openDM(friend)}
+                className={`w-full px-2 py-2 hover:bg-gray-700 rounded flex items-center space-x-3 ${activeChat?.id === friend.id && activeChatType === 'dm' ? 'bg-gray-700' : ''}`}
+              >
+                <div className="relative">
+                  <div className="w-8 h-8 rounded-full bg-gray-600 flex items-center justify-center text-sm font-semibold">
+                    {friend.avatar}
+                  </div>
+                  <div className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-gray-800 ${getStatusColor(friend.status)}`}></div>
+                </div>
+                <span className="text-sm">{friend.username}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="h-14 bg-gray-900 px-2 flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <div className="relative">
+              <div className="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center text-sm font-semibold">
+                {currentUser.avatar}
+              </div>
+              <div className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-gray-900 ${getStatusColor('online')}`}></div>
+            </div>
+            <div className="text-xs">
+              <div className="font-semibold">{currentUser.username}</div>
+              <div className="text-gray-400">Online</div>
+            </div>
+          </div>
+          <button onClick={logout} className="text-gray-400 hover:text-gray-100" title="Logout">
+            <LogOut size={18} />
+          </button>
+        </div>
+      </div>
+
+      <div className="flex-1 flex flex-col">
+        {activeView === 'friends' && !activeChat && (
+          <div className="flex-1 flex flex-col">
+            <div className="h-12 px-4 flex items-center border-b border-gray-700">
+              <Users size={20} className="mr-2" />
+              <span className="font-semibold">Friends</span>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6">
+              {friendRequests.length > 0 && (
+                <div className="mb-6">
+                  <h3 className="text-xs font-semibold text-gray-400 mb-3">PENDING — {friendRequests.length}</h3>
+                  {friendRequests.map(request => (
+                    <div key={request.id} className="flex items-center justify-between p-3 border-b border-gray-700">
+                      <div className="flex items-center space-x-3">
+                        <div className="w-10 h-10 rounded-full bg-gray-600 flex items-center justify-center text-xl font-semibold">
+                          {request.avatar}
+                        </div>
+                        <div>
+                          <div className="font-medium">{request.username}</div>
+                          <div className="text-xs text-gray-400">Incoming Friend Request</div>
+                        </div>
+                      </div>
+                      <div className="flex space-x-2">
+                        <button
+                          onClick={() => acceptFriendRequest(request)}
+                          className="px-4 py-1 bg-green-600 hover:bg-green-700 rounded text-sm"
+                        >
+                          Accept
+                        </button>
+                        <button
+                          onClick={() => declineFriendRequest(request)}
+                          className="px-4 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+                        >
+                          Decline
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {sentRequests.length > 0 && (
+                <div className="mb-6">
+                  <h3 className="text-xs font-semibold text-gray-400 mb-3">SENT REQUESTS — {sentRequests.length}</h3>
+                  {sentRequests.map(request => (
+                    <div key={request.id} className="flex items-center justify-between p-3 border-b border-gray-700">
+                      <div className="flex items-center space-x-3">
+                        <div className="w-10 h-10 rounded-full bg-gray-600 flex items-center justify-center text-xl font-semibold">
+                          {request.username[0].toUpperCase()}
+                        </div>
+                        <div>
+                          <div className="font-medium">{request.username}</div>
+                          <div className="text-xs text-gray-400">Waiting for response...</div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              
+              <h3 className="text-xs font-semibold text-gray-400 mb-3">ALL FRIENDS — {friends.length}</h3>
+              {friends.length === 0 ? (
+                <div className="text-center text-gray-400 mt-8">
+                  <p>No friends yet. Click the + icon to add friends!</p>
+                </div>
+              ) : (
+                friends.map(friend => (
+                  <div key={friend.id} className="flex items-center justify-between p-3 border-b border-gray-700 hover:bg-gray-700 rounded">
+                    <div className="flex items-center space-x-3">
+                      <div className="relative">
+                        <div className="w-10 h-10 rounded-full bg-gray-600 flex items-center justify-center text-xl font-semibold">
+                          {friend.avatar}
+                        </div>
+                        <div className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-gray-800 ${getStatusColor(friend.status)}`}></div>
+                      </div>
+                      <div>
+                        <div className="font-medium">{friend.username}</div>
+                        <div className="text-xs text-gray-400 capitalize">{friend.status}</div>
+                      </div>
+                    </div>
+                    <div className="flex space-x-2">
+                      <button
+                        onClick={() => openDM(friend)}
+                        className="p-2 bg-gray-700 hover:bg-gray-600 rounded"
+                      >
+                        <Send size={16} />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeChat && (
+          <>
+            <div className="h-12 px-4 flex items-center justify-between border-b border-gray-700">
+              <div className="flex items-center space-x-2">
+                {activeChatType === 'group' ? (
+                  <>
+                    <div className="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center text-lg font-semibold">
+                      {activeChat.name[0]}
+                    </div>
+                    <span className="font-semibold">{activeChat.name}</span>
+                  </>
+                ) : (
+                  <>
+                    <div className="relative">
+                      <div className="w-8 h-8 rounded-full bg-gray-600 flex items-center justify-center text-lg font-semibold">
+                        {activeChat.avatar}
+                      </div>
+                      <div className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-gray-800 ${getStatusColor(activeChat.status)}`}></div>
+                    </div>
+                    <span className="font-semibold">{activeChat.username}</span>
+                  </>
+                )}
+              </div>
+              <div className="flex items-center space-x-4">
+                {!inCall ? (
+                  <>
+                    <button onClick={() => setInCall(true)} className="text-gray-400 hover:text-gray-100">
+                      <Phone size={20} />
+                    </button>
+                    <button onClick={() => setInCall(true)} className="text-gray-400 hover:text-gray-100">
+                      <Video size={20} />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button 
+                      onClick={() => setIsMuted(!isMuted)}
+                      className={`${isMuted ? 'text-red-500' : 'text-gray-400'} hover:text-gray-100`}
+                    >
+                      {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
+                    </button>
+                    <button onClick={() => { setInCall(false); setIsMuted(false); }} className="text-red-500 hover:text-red-400">
+                      <PhoneOff size={20} />
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {inCall && (
+              <div className="bg-green-600 px-4 py-2 flex items-center justify-center space-x-2">
+                <Phone size={16} className="animate-pulse" />
+                <span className="text-sm font-medium">Voice Connected</span>
+              </div>
+            )}
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {currentMessages.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-full text-gray-400">
+                  <div className="w-16 h-16 rounded-full bg-gray-700 flex items-center justify-center mb-4 text-2xl font-semibold">
+                    {activeChatType === 'group' ? activeChat.name[0] : activeChat.avatar}
+                  </div>
+                  <h3 className="text-xl font-bold text-gray-100 mb-2">
+                    {activeChatType === 'group' ? activeChat.name : activeChat.username}
+                  </h3>
+                  <p className="text-sm">
+                    {activeChatType === 'group' 
+                      ? `This is the beginning of ${activeChat.name}.`
+                      : `This is the beginning of your direct message history with ${activeChat.username}.`}
+                  </p>
+                </div>
+              ) : (
+                currentMessages.map(msg => (
+                  <div key={msg.id} className="flex items-start space-x-3 hover:bg-gray-750">
+                    <div className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center text-sm font-semibold flex-shrink-0">
+                      {msg.senderAvatar}
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-center space-x-2">
+                        <span className="font-semibold">{msg.senderName}</span>
+                        <span className="text-xs text-gray-400">{msg.timestamp}</span>
+                      </div>
+                      <div className="text-gray-100">{msg.content}</div>
+                    </div>
+                  </div>
+                ))
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+
+            <div className="p-4">
+              <div className="flex items-center bg-gray-700 rounded-lg px-4 py-3">
+                <input
+                  type="text"
+                  value={inputMessage}
+                  onChange={(e) => setInputMessage(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+                  placeholder={`Message ${activeChatType === 'group' ? activeChat.name : activeChat.username}`}
+                  className="flex-1 bg-transparent outline-none text-gray-100"
+                />
+                <button 
+                  onClick={sendMessage}
+                  className="text-gray-400 hover:text-gray-100 ml-3"
+                >
+                  <Send size={20} />
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+    </script>
+</body>
+</html>
